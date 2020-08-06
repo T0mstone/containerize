@@ -24,7 +24,9 @@
 //! (In real code, `C` is called `Contained`, you'd have every single char enclosed in a `Single` and you'd have to create the enum with variants `Squ` and `Par` yourself)
 //!
 
-use std::fmt::Debug;
+use bi_result::BiResult;
+use std::iter::{once, FromIterator};
+use std::marker::PhantomData;
 
 /// The core data type. It represents grouped pieces of a stream.
 ///
@@ -48,9 +50,41 @@ pub enum DelimeterSide {
     Right,
 }
 
+impl DelimeterSide {
+    /// Decide on left or right based on which of the arguments `t` is equal to
+    ///
+    /// Returns `None` is `t` is equal to both or neither of the two options
+    #[inline]
+    pub fn from<T: PartialEq>(t: T, left: T, right: T) -> Option<Self> {
+        let left = t == left;
+        let right = t == right;
+        if left == right {
+            None
+        } else if left {
+            Some(DelimeterSide::Left)
+        } else {
+            // in this case, `right == true` since `right == false && left == false` is already covered by the first case
+            Some(DelimeterSide::Right)
+        }
+    }
+
+    /// Pick an element from `left` or `right`, depending on the value of `self`
+    #[inline]
+    pub fn choose<T>(self, left: T, right: T) -> T {
+        match self {
+            DelimeterSide::Left => left,
+            DelimeterSide::Right => right,
+        }
+    }
+}
+
 /// An Error created when there are unmatched delimeters, like in `abc(`
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub struct UnmatchedDelimeter<C>(DelimeterSide, usize, C);
+pub struct UnmatchedDelimeter<C> {
+    pub side: DelimeterSide,
+    pub source_position: usize,
+    pub kind: C,
+}
 
 /// A function for creating `Containerized` data from a linear stream of tokens
 ///
@@ -60,14 +94,14 @@ pub struct UnmatchedDelimeter<C>(DelimeterSide, usize, C);
 ///
 /// Note that in `abc[(def])`, both `[` and `]` would be counted as unmatched delimeters
 #[allow(clippy::type_complexity)]
-pub fn containerize<C: PartialEq + Debug, T: Debug>(
-    v: Vec<T>,
-    mut detect_delimeter: impl FnMut(&T) -> Option<(DelimeterSide, C)>,
-) -> (Vec<Containerized<C, Vec<T>>>, Vec<UnmatchedDelimeter<C>>) {
-    let mut base: Vec<Containerized<C, Vec<T>>> = vec![];
+pub fn containerize<C: PartialEq, I: IntoIterator>(
+    iter: I,
+    mut detect_delimeter: impl FnMut(&I::Item) -> Option<(DelimeterSide, C)>,
+) -> BiResult<Vec<Containerized<C, Vec<I::Item>>>, Vec<UnmatchedDelimeter<C>>> {
+    let mut base: Vec<Containerized<C, Vec<I::Item>>> = vec![];
     let mut stack = vec![];
     let mut unmatched = vec![];
-    for (i, t) in v.into_iter().enumerate() {
+    for (i, t) in iter.into_iter().enumerate() {
         match detect_delimeter(&t) {
             Some((s, c)) => match s {
                 DelimeterSide::Left => stack.push((i, c, vec![])),
@@ -82,7 +116,11 @@ pub fn containerize<C: PartialEq + Debug, T: Debug>(
                     }
                     _ => {
                         // push an error and ignore it
-                        unmatched.push(UnmatchedDelimeter(DelimeterSide::Right, i, c));
+                        unmatched.push(UnmatchedDelimeter {
+                            side: DelimeterSide::Right,
+                            source_position: i,
+                            kind: c,
+                        });
                     }
                 },
             },
@@ -100,7 +138,11 @@ pub fn containerize<C: PartialEq + Debug, T: Debug>(
         // prepend the rest
         let extra = stack.into_iter().map(|(i, c, last)| {
             // push an error and ignore the beginning delim
-            unmatched.push(UnmatchedDelimeter(DelimeterSide::Left, i, c));
+            unmatched.push(UnmatchedDelimeter {
+                side: DelimeterSide::Left,
+                source_position: i,
+                kind: c,
+            });
             // ignoring means flattening the structure
             last
         });
@@ -121,26 +163,31 @@ pub fn containerize<C: PartialEq + Debug, T: Debug>(
         }
         // base.extend(extra);
     }
-    (base, unmatched)
+    BiResult(base, unmatched)
 }
 
-impl<C, T> Containerized<C, Vec<T>> {
-    /// Convert from `Single(vec![t1, t2, ...])` to `vec![Single(t1), Single(t2), ...]`
-    pub fn spread_single(self) -> Vec<Containerized<C, T>> {
+impl<C, I: IntoIterator<Item = T>, T> Containerized<C, I> {
+    /// Convert from a `Containerized` of an `IntoIterator` (e.g. `Single(vec![t1, t2, ...])`)
+    /// to a `FromIterator` of `Containerized`s (e.g. `vec![Single(t1), Single(t2), ...].into_iter()`)
+    pub fn spread_single<J: FromIterator<Containerized<C, T>>>(self) -> J {
         match self {
             Containerized::Single(v) => v.into_iter().map(Containerized::Single).collect(),
-            Containerized::Contained(c, v) => vec![Containerized::Contained(
+            Containerized::Contained(c, v) => once(Containerized::Contained(
                 c,
                 v.into_iter()
-                    .flat_map(Containerized::spread_single)
+                    .flat_map(Containerized::spread_single::<Vec<_>>)
                     .collect(),
-            )],
+            ))
+            .collect(),
         }
     }
+}
 
-    /// Convert from `vec![Single(t1), Single(t2), Contained(...), ...]` to `vec![Single(vec![t1, t2]), Contained(...), ...]`
-    pub fn collect_single(v: Vec<Containerized<C, T>>) -> Vec<Self> {
-        v.into_iter().fold(vec![], |mut res, e| {
+impl<C, T> Containerized<C, T> {
+    /// Convert from an `IntoIterator` of a `Containerized` (e.g. `vec![Single(t1), Single(t2), Contained(...), ...]`)
+    /// to a `Vec` of `Containerized`s of `Vec`s (e.g. `vec![Single(vec![t1, t2]), Contained(...), ...]`)
+    pub fn collect_single<I: IntoIterator<Item = Self>>(v: I) -> Vec<Containerized<C, Vec<T>>> {
+        v.into_iter().fold(vec![], |mut res, e: Self| {
             match e {
                 Containerized::Single(t) => match res.last_mut() {
                     Some(Containerized::Single(v)) => v.push(t),
@@ -155,120 +202,140 @@ impl<C, T> Containerized<C, Vec<T>> {
     }
 }
 
+pub mod visit;
+
 impl<C, T> Containerized<C, T> {
-    /// works like [visit] but passes `self` mutably, allowing the function to mutate `self`
+    /// returns the container kind if `self` is `Contained`, `None` otherwise
     #[inline]
-    pub fn visit_mut(&mut self, mut f: impl FnMut(&mut Self), reverse: bool) {
-        self.visit_mut_inner(&mut f, reverse)
+    pub fn container_kind(&self) -> Option<&C> {
+        if let Containerized::Contained(kind, _) = self {
+            Some(kind)
+        } else {
+            None
+        }
     }
 
-    fn visit_mut_inner(&mut self, f: &mut impl FnMut(&mut Self), reverse: bool) {
-        if !reverse {
-            f(self);
-        }
+    pub fn children(&self) -> &[Self] {
         match self {
-            Containerized::Single(_) => (),
-            Containerized::Contained(_, v) => {
-                for e in v {
-                    e.visit_mut_inner(f, reverse)
-                }
-            }
-        }
-        if reverse {
-            f(self);
+            Containerized::Single(_) => &[],
+            Containerized::Contained(_, v) => &v,
         }
     }
 
-    /// Call a function with every recursive leaf of the tree
-    ///
-    /// When `reverse` is `false`, the function is called on parents before their children.
-    /// When it is `true`, the opposite is the case.
-    #[inline]
-    pub fn visit(&self, mut f: impl FnMut(&Self), reverse: bool) {
-        self.visit_inner(&mut f, reverse)
-    }
-
-    fn visit_inner(&self, f: &mut impl FnMut(&Self), reverse: bool) {
-        if !reverse {
-            f(self);
-        }
+    pub fn children_mut(&mut self) -> Vec<&mut Self> {
         match self {
-            Containerized::Single(_) => (),
-            Containerized::Contained(_, v) => {
-                for e in v {
-                    e.visit_inner(f, reverse)
-                }
-            }
-        }
-        if reverse {
-            f(self);
+            Containerized::Single(_) => Vec::new(),
+            Containerized::Contained(_, v) => v.iter_mut().collect(),
         }
     }
 
     /// Maps the value inside a `Single` using the given function
     #[inline]
-    pub fn map_single<U>(self, mut f: impl FnMut(T) -> U) -> Containerized<C, U> {
-        self.map_single_inner(&mut f as _)
-    }
+    pub fn map<U>(self, f: impl FnMut(T) -> U) -> Containerized<C, U> {
+        struct Inner<T, U, F: FnMut(T) -> U>(F, PhantomData<(T, U)>);
 
-    fn map_single_inner<U>(self, f: &mut impl FnMut(T) -> U) -> Containerized<C, U> {
-        match self {
-            Containerized::Single(t) => Containerized::Single(f(t)),
-            Containerized::Contained(c, v) => {
-                Containerized::Contained(c, v.into_iter().map(|x| x.map_single_inner(f)).collect())
+        impl<T, U, F: FnMut(T) -> U> Inner<T, U, F> {
+            pub fn f<C>(&mut self, c: Containerized<C, T>) -> Containerized<C, U> {
+                match c {
+                    Containerized::Single(t) => Containerized::Single(self.0(t)),
+                    Containerized::Contained(c, v) => {
+                        Containerized::Contained(c, v.into_iter().map(|x| self.f(x)).collect())
+                    }
+                }
             }
         }
+
+        Inner(f, PhantomData).f(self)
+    }
+
+    /// Maps the value inside a `Single` using the given function, which can return more than one value
+    #[inline]
+    pub fn multi_map<
+        U,
+        I: IntoIterator<Item = U>,
+        F: FnMut(T) -> I,
+        J: FromIterator<Containerized<C, U>>,
+    >(
+        self,
+        f: F,
+    ) -> J {
+        struct Inner<T, U, I: IntoIterator<Item = U>, F: FnMut(T) -> I>(F, PhantomData<(T, U, I)>);
+
+        impl<T, U, I: IntoIterator<Item = U>, F: FnMut(T) -> I> Inner<T, U, I, F> {
+            pub fn f<C, J: FromIterator<Containerized<C, U>>>(
+                &mut self,
+                c: Containerized<C, T>,
+            ) -> J {
+                match c {
+                    Containerized::Single(t) => {
+                        self.0(t).into_iter().map(Containerized::Single).collect()
+                    }
+                    Containerized::Contained(c, v) => once(Containerized::Contained(
+                        c,
+                        v.into_iter().flat_map(|x| self.f::<C, Vec<_>>(x)).collect(),
+                    ))
+                    .collect(),
+                }
+            }
+        }
+
+        Inner(f, PhantomData).f(self)
     }
 
     /// Maps the kind, i.e. the first value inside a `Contained` using the given function
     #[inline]
-    pub fn map_kind<K>(self, mut f: impl FnMut(C) -> K) -> Containerized<K, T> {
-        self.map_kind_inner(&mut f)
-    }
+    pub fn map_kind<K>(self, f: impl FnMut(C) -> K) -> Containerized<K, T> {
+        struct Inner<C, K, F: FnMut(C) -> K>(F, PhantomData<(C, K)>);
 
-    fn map_kind_inner<K>(self, f: &mut impl FnMut(C) -> K) -> Containerized<K, T> {
-        match self {
-            Containerized::Single(t) => Containerized::Single(t),
-            Containerized::Contained(c, v) => {
-                Containerized::Contained(f(c), v.into_iter().map(|x| x.map_kind_inner(f)).collect())
+        impl<C, K, F: FnMut(C) -> K> Inner<C, K, F> {
+            pub fn f<T>(&mut self, c: Containerized<C, T>) -> Containerized<K, T> {
+                match c {
+                    Containerized::Single(t) => Containerized::Single(t),
+                    Containerized::Contained(c, v) => Containerized::Contained(
+                        self.0(c),
+                        v.into_iter().map(|x| self.f(x)).collect(),
+                    ),
+                }
             }
         }
+
+        Inner(f, PhantomData).f(self)
     }
 
     /// Flattens the structure to create a linear stream of tokens
     ///
     /// `make_delim` is used to create a pair of delimeters for a container kind
-    pub fn flatten(self, mut make_delim: impl FnMut(C) -> (T, T)) -> Vec<T> {
-        self.flatten_inner(&mut make_delim)
-    }
+    pub fn uncontainerize(self, make_delim: impl FnMut(C) -> (T, T)) -> Vec<T> {
+        struct Inner<C, T, F: FnMut(C) -> (T, T)>(F, PhantomData<(C, T)>);
 
-    fn flatten_inner(self, make_delim: &mut impl FnMut(C) -> (T, T)) -> Vec<T> {
-        match self {
-            Containerized::Single(t) => vec![t],
-            Containerized::Contained(c, v) => {
-                let (left, right) = make_delim(c);
-                let mut res = vec![left];
-                res.append(
-                    &mut v
-                        .into_iter()
-                        .flat_map(|c| c.flatten_inner(make_delim))
-                        .collect(),
-                );
-                res.push(right);
-                res
+        impl<C, T, F: FnMut(C) -> (T, T)> Inner<C, T, F> {
+            pub fn f(&mut self, c: Containerized<C, T>) -> Vec<T> {
+                match c {
+                    Containerized::Single(t) => vec![t],
+                    Containerized::Contained(c, v) => {
+                        let (left, right) = self.0(c);
+                        let mut res = vec![left];
+                        res.append(&mut v.into_iter().flat_map(|c| self.f(c)).collect());
+                        res.push(right);
+                        res
+                    }
+                }
             }
         }
+
+        Inner(make_delim, PhantomData).f(self)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::visit::*;
+    use crate::*;
 
     #[test]
     fn containerized() {
         let v = vec![b'(', 2, b')', 2, b')', b'(', 2];
-        let (c, e) = containerize(v, |&t| {
+        let BiResult(c, e) = containerize(v, |&t| {
             if t == b'(' {
                 Some((DelimeterSide::Left, ()))
             } else if t == b')' {
@@ -287,8 +354,16 @@ mod tests {
         assert_eq!(
             e,
             vec![
-                UnmatchedDelimeter(DelimeterSide::Right, 4, ()),
-                UnmatchedDelimeter(DelimeterSide::Left, 5, ())
+                UnmatchedDelimeter {
+                    side: DelimeterSide::Right,
+                    source_position: 4,
+                    kind: ()
+                },
+                UnmatchedDelimeter {
+                    side: DelimeterSide::Left,
+                    source_position: 5,
+                    kind: ()
+                }
             ]
         );
     }
@@ -296,7 +371,7 @@ mod tests {
     #[test]
     fn spread_collect() {
         let c = Containerized::<(), _>::Single(vec![2, 3, 4]);
-        let cs = c.clone().spread_single();
+        let cs = c.clone().spread_single::<Vec<_>>();
         assert_eq!(
             cs,
             vec![
@@ -322,27 +397,21 @@ mod tests {
             ],
         );
         let mut sum = 0;
-        c.visit(
-            |x| {
-                if let Containerized::Single(n) = *x {
-                    sum += n
-                }
-            },
-            false,
-        );
+        c.visit(|x| {
+            if let Containerized::Single(n) = *x {
+                sum += n
+            }
+        });
         assert_eq!(sum, 3 + 4 + 5 + 6);
         let mut c2 = c.clone();
-        c.visit_mut(
-            |x| match x {
-                Containerized::Single(n) => {
-                    *n += 1;
-                }
-                Containerized::Contained(_, v) => {
-                    v.push(Containerized::Single(1));
-                }
-            },
-            false,
-        );
+        c.visit(|x| match x {
+            Containerized::Single(n) => {
+                *n += 1;
+            }
+            Containerized::Contained(_, v) => {
+                v.push(Containerized::Single(1));
+            }
+        });
         let ctrl = Containerized::<(), _>::Contained(
             (),
             vec![
@@ -360,8 +429,7 @@ mod tests {
             ],
         );
         assert_eq!(c, ctrl);
-        println!();
-        c2.visit_mut(
+        c2.visit_with_config(
             |x| match x {
                 Containerized::Single(n) => {
                     *n += 1;
@@ -370,7 +438,10 @@ mod tests {
                     v.push(Containerized::Single(1));
                 }
             },
-            true,
+            VisitConfig {
+                order: TraversalOrder::ParentLast,
+                ..Default::default()
+            },
         );
         let ctrl = Containerized::<(), _>::Contained(
             (),
@@ -394,7 +465,7 @@ mod tests {
     #[test]
     fn map() {
         let c = Containerized::<(), u8>::Single(3);
-        assert_eq!(c.map_single(|x| x + 1), Containerized::Single(4));
+        assert_eq!(c.map(|x| x + 1), Containerized::Single(4));
         let c = Containerized::<(), u8>::Contained(
             (),
             vec![Containerized::Single(2), Containerized::Single(3)],
@@ -403,7 +474,7 @@ mod tests {
             (),
             vec![Containerized::Single(3), Containerized::Single(4)],
         );
-        assert_eq!(c.map_single(|x| x + 1), ctrl);
+        assert_eq!(c.map(|x| x + 1), ctrl);
         let c = Containerized::<u8, u8>::Contained(
             1,
             vec![Containerized::Single(2), Containerized::Single(3)],
@@ -432,7 +503,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            c.flatten(|_| (b'(', b')')),
+            c.uncontainerize(|_| (b'(', b')')),
             vec![b'(', b'(', b'(', b')', b'(', 3, b')', b')', 3, 4, b')']
         );
     }
