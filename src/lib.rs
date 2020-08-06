@@ -22,7 +22,6 @@
 //! ]
 //! ```
 //! (In real code, `C` is called `Contained`, you'd have every single char enclosed in a `Single` and you'd have to create the enum with variants `Squ` and `Par` yourself)
-//!
 
 #![warn(missing_docs)]
 use bi_result::BiResult;
