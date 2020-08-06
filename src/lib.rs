@@ -24,6 +24,7 @@
 //! (In real code, `C` is called `Contained`, you'd have every single char enclosed in a `Single` and you'd have to create the enum with variants `Squ` and `Par` yourself)
 //!
 
+#![warn(missing_docs)]
 use bi_result::BiResult;
 use std::iter::{once, FromIterator};
 use std::marker::PhantomData;
@@ -81,8 +82,11 @@ impl DelimeterSide {
 /// An Error created when there are unmatched delimeters, like in `abc(`
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct UnmatchedDelimeter<C> {
+    /// The side of the unmatched delimeter
     pub side: DelimeterSide,
+    /// The position of the unmatched delimeter
     pub source_position: usize,
+    /// The kind of the unmatched delimeter
     pub kind: C,
 }
 
@@ -205,7 +209,7 @@ impl<C, T> Containerized<C, T> {
 pub mod visit;
 
 impl<C, T> Containerized<C, T> {
-    /// returns the container kind if `self` is `Contained`, `None` otherwise
+    /// Returns the container kind if `self` is `Contained`, `None` otherwise
     #[inline]
     pub fn container_kind(&self) -> Option<&C> {
         if let Containerized::Contained(kind, _) = self {
@@ -215,6 +219,9 @@ impl<C, T> Containerized<C, T> {
         }
     }
 
+    /// Returns the children of `self` by reference
+    ///
+    /// Returns `&[]` if `self` is a `Single`
     pub fn children(&self) -> &[Self] {
         match self {
             Containerized::Single(_) => &[],
@@ -222,6 +229,9 @@ impl<C, T> Containerized<C, T> {
         }
     }
 
+    /// Returns the children of `self` by mutable references
+    ///
+    /// Returns `vec![]` if `self` is a `Single`
     pub fn children_mut(&mut self) -> Vec<&mut Self> {
         match self {
             Containerized::Single(_) => Vec::new(),

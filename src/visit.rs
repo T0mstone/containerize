@@ -1,3 +1,28 @@
+//! Functionality related to visiting a `Containerized` structure
+//!
+//! ("visiting" is jargon for applying a function to every node, i.e. the top value, all its children, all their children, etc.)
+//!
+//! # Order
+//! When traversing the structure, the function is either applied to the node (parent) before (preorder) or after (postorder) its children
+//!
+//! # Depth-/Breadth-first traversal
+//! Say we have the following structure
+//! ```ignore
+//!     A
+//!    /|\
+//!   B C D
+//!  / \   \
+//! E   F   G
+//! ```
+//! Using depth-first traversal, all children are handled before moving on to the next node, in our example (using preorder):
+//! ```ignore
+//! A, B, E, F, C, D, G
+//! ```
+//! Using breadth-first traversal, all nodes on one level are handled after each other, and _then_ their children, in our example (also using preorder):
+//! ```ignores
+//! A, B, C, D, E, F, G
+//! ```
+
 use crate::*;
 
 mod private {
@@ -7,7 +32,12 @@ mod private {
     impl Sealed for super::PostOrder {}
 }
 
+/// The order in which to visit
+///
+/// This is a trait in order to work similar to the [typestate](http://cliffle.com/blog/rust-typestate/) pattern;
+/// It enables monomorphising the functions and thus eliminates a lot of runtime checks for the order
 pub trait VisitOrder: self::private::Sealed {
+    /// If the function is applied to the parent before its children
     const PARENT_FIRST: bool;
 }
 impl VisitOrder for PreOrder {
@@ -17,25 +47,36 @@ impl VisitOrder for PostOrder {
     const PARENT_FIRST: bool = false;
 }
 
+/// Pre-Order means applying the function to the parent, and then to its children
 pub enum PreOrder {}
+#[allow(missing_docs)]
 pub type ParentFirst = PreOrder;
+#[allow(missing_docs)]
 pub type ChildrenLast = PreOrder;
+/// Post-Order means applying the function to the children before their parent
 pub enum PostOrder {}
+#[allow(missing_docs)]
 pub type ParentLast = PostOrder;
+#[allow(missing_docs)]
 pub type ChildrenFirst = PostOrder;
 
+#[allow(missing_docs)]
+/// See the [module level documentation](/)
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum TraversalStrategy {
     DepthFirst,
     BreadthFirst,
 }
 
+#[allow(missing_docs)]
+/// A runtime value corresponding to [`VisitOrder`](trait.VisitOrder.html)
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum TraversalOrder {
     PreOrder,
     PostOrder,
 }
 
+#[allow(missing_docs)]
 #[allow(non_upper_case_globals)]
 impl TraversalOrder {
     pub const ParentFirst: Self = Self::PreOrder;
@@ -44,7 +85,9 @@ impl TraversalOrder {
     pub const ChildrenFirst: Self = Self::PostOrder;
 }
 
+/// A config structure that stores all info about the details of the `visit` algorithm in one place
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[allow(missing_docs)]
 pub struct VisitConfig {
     // todo: add a field to determine iterative/recursive
     pub order: TraversalOrder,
@@ -146,171 +189,15 @@ impl<C, T, F: FnMut(&mut Containerized<C, T>), O: VisitOrder> IterativeVisitor<C
 }
 
 impl<C, T> Containerized<C, T> {
+    /// Visit `self` and all children with the specified config
     #[inline]
     pub fn visit_with_config<F: FnMut(&mut Self)>(&mut self, f: F, config: VisitConfig) {
         config.exec(f, self)
     }
 
+    /// Visit `self` and all children with the default config (depth-first, preorder)
     #[inline]
     pub fn visit<F: FnMut(&mut Self)>(&mut self, f: F) {
         self.visit_with_config(f, VisitConfig::default())
     }
-
-    //
-    //
-    // /// works like [visit] but passes `self` mutably, allowing the function to mutate `self`
-    // #[inline]
-    // pub fn visit_mut(&mut self, mut f: impl FnMut(&mut Self), reverse: bool) {
-    //     // implementation: stack of stacks
-    //     //      stack[_]: (?, sub_stack)
-    //     //
-    //     //      the top-most sub-stack gets handled first
-    //     let mut stack = vec![(0, vec![])];
-    //
-    //     if !reverse {
-    //         f(self);
-    //     }
-    //     match self {
-    //         Containerized::Single(_) => {
-    //             if reverse {
-    //                 f(self);
-    //             }
-    //             return;
-    //         }
-    //         Containerized::Contained(_, v) => {
-    //             let vt = std::mem::take(v);
-    //             stack.push((0, vt));
-    //         }
-    //     }
-    //
-    //     loop {
-    //         let (i, last) = stack.last_mut().unwrap();
-    //         match last.get_mut(*i) {
-    //             Some(cont) => {
-    //                 if !reverse {
-    //                     f(cont);
-    //                 }
-    //                 match cont {
-    //                     Containerized::Single(_) => {
-    //                         if reverse {
-    //                             f(cont)
-    //                         }
-    //                     }
-    //                     Containerized::Contained(_, v) => {
-    //                         let vt = std::mem::take(v);
-    //                         stack.push((0, vt));
-    //                     }
-    //                 }
-    //             }
-    //             None => {
-    //                 let (_, last) = stack.pop().unwrap();
-    //                 let curr = match stack.last_mut() {
-    //                     Some((ix, sup)) => &mut sup[*ix],
-    //                     None => self,
-    //                 };
-    //                 match curr {
-    //                     Containerized::Single(_) => unreachable!(),
-    //                     Containerized::Contained(_, v) => *v = last,
-    //                 }
-    //                 if reverse {
-    //                     f(curr);
-    //                 }
-    //                 if stack.is_empty() {
-    //                     break;
-    //                 }
-    //             }
-    //         }
-    //     }
-    // }
-    //
-    // // #[inline]
-    // // fn visit_mut_reverse(&mut self, mut f: impl FnMut(&mut Self)) {
-    // //     #[derive(Copy, Clone)]
-    // //     enum Action {
-    // //         Visit,
-    // //         Call,
-    // //     }
-    // //
-    // //     let mut to_visit = std::iter::once((Action::Visit, self)).collect::<VecDeque<_>>();
-    // //     while let Some((act, cont)) = to_visit.pop_front() {
-    // //         if let Action::Call = act {
-    // //             f(cont);
-    // //             continue;
-    // //         }
-    // //
-    // //         match cont {
-    // //             Containerized::Contained(_, v) => {
-    // //                 to_visit.extend(v.into_iter().map(|c| (Action::Visit, c)));
-    // //                 to_visit.push_back((Action::Call, cont));
-    // //             }
-    // //             Containerized::Single(_) => f(cont),
-    // //         }
-    // //     }
-    // // }
-    // //
-    // // #[inline]
-    // // fn visit_mut_noreverse(&mut self, mut f: impl FnMut(&mut Self)) {
-    // //     #[derive(Copy, Clone)]
-    // //     enum Action {
-    // //         Visit,
-    // //         Call,
-    // //     }
-    // //
-    // //     let mut to_visit = std::iter::once((Action::Visit, self)).collect::<VecDeque<_>>();
-    // //     while let Some((act, cont)) = to_visit.pop_front() {
-    // //         if let Action::Call = act {
-    // //             f(cont);
-    // //             continue;
-    // //         }
-    // //
-    // //         f(cont);
-    // //         if let Containerized::Contained(_, v) = cont {
-    // //             to_visit.extend(v.into_iter().map(|c| (Action::Visit, c)));
-    // //         }
-    // //     }
-    // // }
-    //
-    // // fn visit_mut_inner(&mut self, f: &mut impl FnMut(&mut Self), reverse: bool) {
-    // //     if !reverse {
-    // //         f(self);
-    // //     }
-    // //     match self {
-    // //         Containerized::Single(_) => (),
-    // //         Containerized::Contained(_, v) => {
-    // //             for e in v {
-    // //                 e.visit_mut_inner(f, reverse)
-    // //             }
-    // //         }
-    // //     }
-    // //     if reverse {
-    // //         f(self);
-    // //     }
-    // // }
-    //
-    // /// Call a function with every recursive leaf of the tree
-    // ///
-    // /// When `reverse` is `false`, the function is called on parents before their children (breadth-first traversal).
-    // /// When it is `true`, the opposite is the case (depth-first traversal).
-    // #[inline]
-    // pub fn visit(&self, mut f: impl FnMut(&Self), reverse: bool) {
-    //     let mut to_visit = vec_deque![(false, self)];
-    //     while let Some((only_call, cont)) = to_visit.pop_front() {
-    //         if only_call {
-    //             f(cont);
-    //             continue;
-    //         }
-    //
-    //         match cont {
-    //             Containerized::Contained(_, ref v) => {
-    //                 to_visit.extend(v.iter().map(|c| (false, c)));
-    //                 if reverse {
-    //                     to_visit.push_back((true, cont));
-    //                 } else {
-    //                     f(cont);
-    //                 }
-    //             }
-    //             Containerized::Single(_) => f(cont),
-    //         }
-    //     }
-    // }
 }
