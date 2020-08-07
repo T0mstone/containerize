@@ -7,7 +7,7 @@
 //!
 //! # Depth-/Breadth-first traversal
 //! Say we have the following structure
-//! ```ignore
+//! ```text
 //!     A
 //!    /|\
 //!   B C D
@@ -15,11 +15,11 @@
 //! E   F   G
 //! ```
 //! Using depth-first traversal, all children are handled before moving on to the next node, in our example (using preorder):
-//! ```ignore
+//! ```text
 //! A, B, E, F, C, D, G
 //! ```
 //! Using breadth-first traversal, all nodes on one level are handled after each other, and _then_ their children, in our example (also using preorder):
-//! ```ignores
+//! ```text
 //! A, B, C, D, E, F, G
 //! ```
 

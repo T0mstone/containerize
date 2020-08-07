@@ -435,7 +435,7 @@ impl<C, T> ContainerizedVec<C, T> {
 impl<C, I: IntoIterator> ContainerizedVec<C, I> {
     /// Split the top-most layer (contents of `Contained` are left untouched) according to `is_sep`,
     /// which determines, whether an item is a separator
-    pub fn split_top<F: FnMut(&I::Item) -> bool>(
+    pub fn split<F: FnMut(&I::Item) -> bool>(
         self,
         mut is_sep: F,
         fuse_repeated: bool,
@@ -477,23 +477,172 @@ impl<C, I: IntoIterator> ContainerizedVec<C, I> {
                 acc
             })
     }
-}
 
-impl<C> ContainerizedVec<C, String> {
-    /// A wrapper for [`split_top(|c: char| c.is_whitespace(), true)`](#method.split_top)
-    pub fn split_top_whitespace(self) -> Vec<Self> {
-        self.map(|s| s.chars().collect::<Vec<_>>())
-            .split_top(|u| u.is_whitespace(), true)
+    /// Removes all items for which `f` returns `true` from the start (contents of `Contained` are left untouched);
+    /// stops at the first item where `f` returns `false` (or at the first `Contained`)
+    pub fn trim_start_matches<F: FnMut(&I::Item) -> bool>(
+        self,
+        mut f: F,
+    ) -> ContainerizedVec<C, Vec<I::Item>> {
+        let mut start = true;
+        self.0
             .into_iter()
-            .map(|v| v.map(|v| v.into_iter().collect::<String>()))
+            .filter_map(|c| {
+                if start {
+                    match c {
+                        Containerized::Single(v) => {
+                            let v = v.into_iter().skip_while(&mut f).collect::<Vec<_>>();
+                            if v.is_empty() {
+                                None
+                            } else {
+                                start = false;
+                                Some(Containerized::Single(v))
+                            }
+                        }
+                        Containerized::Contained(..) => {
+                            start = false;
+                            Some(c.map(|i| i.into_iter().collect()))
+                        }
+                    }
+                } else {
+                    Some(c.map(|i| i.into_iter().collect()))
+                }
+            })
+            .collect()
+    }
+
+    /// Removes all items for which `f` returns `true` from the end (contents of `Contained` are left untouched);
+    /// stops at the first (from the end) item where `f` returns `false` (or at the first `Contained`)
+    pub fn trim_end_matches<F: FnMut(&I::Item) -> bool>(
+        self,
+        mut f: F,
+    ) -> ContainerizedVec<C, Vec<I::Item>> {
+        let mut start = true;
+        self.0
+            .into_iter()
+            .filter_map(|c| {
+                if start {
+                    match c {
+                        Containerized::Single(v) => {
+                            let v = v
+                                .into_iter()
+                                .collect::<Vec<_>>()
+                                .into_iter()
+                                .rev()
+                                .skip_while(&mut f)
+                                .collect::<Vec<_>>()
+                                .also(|v| v.reverse());
+                            if v.is_empty() {
+                                None
+                            } else {
+                                start = false;
+                                Some(Containerized::Single(v))
+                            }
+                        }
+                        Containerized::Contained(..) => {
+                            start = false;
+                            Some(c.map(|i| i.into_iter().collect()))
+                        }
+                    }
+                } else {
+                    Some(c.map(|i| i.into_iter().collect()))
+                }
+            })
+            .collect()
+    }
+
+    /// A combination of [`trim_start_matches`](#method.trim_start_matches) and [`trim_end_matches`](#method.trim_end_matches)
+    pub fn trim_matches<F: FnMut(&I::Item) -> bool>(
+        self,
+        mut f: F,
+    ) -> ContainerizedVec<C, Vec<I::Item>> {
+        let mut start = true;
+        self.0
+            .into_iter()
+            .filter_map(|c| {
+                if start {
+                    match c {
+                        Containerized::Single(v) => {
+                            let v = v
+                                .into_iter()
+                                .skip_while(&mut f)
+                                .collect::<Vec<_>>()
+                                .into_iter()
+                                .rev()
+                                .skip_while(&mut f)
+                                .collect::<Vec<_>>()
+                                .also(|v| v.reverse());
+                            if v.is_empty() {
+                                None
+                            } else {
+                                start = false;
+                                Some(Containerized::Single(v))
+                            }
+                        }
+                        Containerized::Contained(..) => {
+                            start = false;
+                            Some(c.map(|i| i.into_iter().collect()))
+                        }
+                    }
+                } else {
+                    Some(c.map(|i| i.into_iter().collect()))
+                }
+            })
             .collect()
     }
 }
 
+impl<C> ContainerizedVec<C, String> {
+    /// A wrapper for [`split(|c: char| c.is_whitespace(), true)`](#method.split)
+    pub fn split_whitespace(self) -> Vec<Self> {
+        self.map(|s| s.chars().collect::<Vec<_>>())
+            .split(|u| u.is_whitespace(), true)
+            .into_iter()
+            .map(|v| v.map(String::from_iter))
+            .collect()
+    }
+
+    /// A wrapper for [`trim_start_matches(|c: char| c.is_whitespace())`](#method.trim_start_matches)
+    pub fn trim_start(self) -> Self {
+        self.map(|s| s.chars().collect::<Vec<_>>())
+            .trim_start_matches(|&c| c.is_whitespace())
+            .map(String::from_iter)
+    }
+
+    /// A wrapper for [`trim_end_matches(|c: char| c.is_whitespace())`](#method.trim_end_matches)
+    pub fn trim_end(self) -> Self {
+        self.map(|s| s.chars().collect::<Vec<_>>())
+            .trim_end_matches(|&c| c.is_whitespace())
+            .map(String::from_iter)
+    }
+
+    /// A wrapper for [`trim_matches(|c: char| c.is_whitespace())`](#method.trim_matches)
+    pub fn trim(self) -> Self {
+        self.map(|s| s.chars().collect::<Vec<_>>())
+            .trim_matches(|&c| c.is_whitespace())
+            .map(String::from_iter)
+    }
+}
+
 impl<C> ContainerizedVec<C, Vec<u8>> {
-    /// A wrapper for [`split_top(|c: char| c.is_ascii_whitespace(), true)`](#method.split_top)
-    pub fn split_top_whitespace(self) -> Vec<Self> {
-        self.split_top(|u| u.is_ascii_whitespace(), true)
+    /// A wrapper for [`split(|c: u8| c.is_ascii_whitespace(), true)`](#method.split)
+    pub fn split_whitespace(self) -> Vec<Self> {
+        self.split(|u| u.is_ascii_whitespace(), true)
+    }
+
+    /// A wrapper for [`trim_start_matches(|c: u8| c.is_ascii_whitespace())`](#method.trim_start_matches)
+    pub fn trim_start(self) -> Self {
+        self.trim_start_matches(|u| u.is_ascii_whitespace())
+    }
+
+    /// A wrapper for [`trim_end_matches(|c: u8| c.is_ascii_whitespace())`](#method.trim_end_matches)
+    pub fn trim_end(self) -> Self {
+        self.trim_end_matches(|u| u.is_ascii_whitespace())
+    }
+
+    /// A wrapper for [`trim_matches(|c: u8| c.is_ascii_whitespace())`](#method.trim_matches)
+    pub fn trim(self) -> Self {
+        self.trim_matches(|u| u.is_ascii_whitespace())
     }
 }
 
