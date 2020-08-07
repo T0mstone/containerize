@@ -610,17 +610,17 @@ mod tests {
 
     #[test]
     fn spread_collect() {
-        let c = Containerized::<(), _>::Single(vec![2, 3, 4]);
-        let cs = c.clone().spread_single::<Vec<_>>();
+        let c = Containerized::<(), Vec<u8>>::Single(vec![2, 3, 4]);
+        let cs = c.clone().spread_single::<ContainerizedVec<(), u8>>();
         assert_eq!(
-            cs,
+            cs.0,
             vec![
                 Containerized::Single(2),
                 Containerized::Single(3),
                 Containerized::Single(4)
             ]
         );
-        assert_eq!(Containerized::collapse_single(cs), vec![c]);
+        assert_eq!(cs.collapse_single().0, vec![c]);
     }
 
     #[test]
