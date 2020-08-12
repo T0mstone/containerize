@@ -430,6 +430,39 @@ impl<C, T> ContainerizedVec<C, T> {
             .flat_map(|c| c.uncontainerize(&mut make_delim))
             .collect()
     }
+
+    /// Split the top-most layer (contents of `Contained` are left untouched) according to `split_single`,
+    /// which splits a single element - adjacent elements are joint together using `join_asdjacent`
+    pub fn split_inner<I: IntoIterator<Item = T>, F: FnMut(T) -> I, G: FnMut(T, T) -> T>(
+        self,
+        mut split_single: F,
+        mut join_adjacent: G,
+    ) -> Vec<ContainerizedVec<C, I::Item>> {
+        self.0
+            .into_iter()
+            .fold(vec![ContainerizedVec(vec![])], |mut acc, c| {
+                match c {
+                    Containerized::Single(t) => {
+                        let mut spl = split_single(t).into_iter();
+                        if let Some(Some(Containerized::Single(rx))) =
+                            acc.last_mut().map(|v| v.last_mut())
+                        {
+                            if let Some(y) = spl.next() {
+                                // SAFETY: since the original rx can't be touched between the read and the write, this is safe
+                                unsafe {
+                                    let x = std::ptr::read(rx);
+                                    std::ptr::write(rx, join_adjacent(x, y))
+                                }
+                            }
+                        }
+
+                        acc.push(spl.map(Containerized::Single).collect())
+                    }
+                    Containerized::Contained(..) => acc.last_mut().unwrap().push(c),
+                }
+                acc
+            })
+    }
 }
 
 impl<C, I: IntoIterator> ContainerizedVec<C, I> {
@@ -593,13 +626,22 @@ impl<C, I: IntoIterator> ContainerizedVec<C, I> {
 }
 
 impl<C> ContainerizedVec<C, String> {
-    /// A wrapper for [`split(|c: char| c.is_whitespace(), true)`](#method.split)
+    /// Splits according to `char::is_whitespace`, treats multiple whitespaces in a row as a single separator\
+    /// Otherwise behaves like [`split`](#method.split)
     pub fn split_whitespace(self) -> Vec<Self> {
-        self.map(|s| s.chars().collect::<Vec<_>>())
-            .split(|u| u.is_whitespace(), true)
-            .into_iter()
-            .map(|v| v.map(String::from_iter))
-            .collect()
+        // self.map(|s| s.chars().collect::<Vec<_>>())
+        //     .split(|u| u.is_whitespace(), true)
+        //     .into_iter()
+        //     .map(|v| v.map(String::from_iter))
+        //     .collect()
+        self.split_inner(
+            |s| {
+                s.split_whitespace()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            },
+            |a, b| a.also(|a| a.push_str(&b)),
+        )
     }
 
     /// A wrapper for [`trim_start_matches(|c: char| c.is_whitespace())`](#method.trim_start_matches)
@@ -625,7 +667,8 @@ impl<C> ContainerizedVec<C, String> {
 }
 
 impl<C> ContainerizedVec<C, Vec<u8>> {
-    /// A wrapper for [`split(|c: u8| c.is_ascii_whitespace(), true)`](#method.split)
+    /// Splits according to `u8::is_ascii_whitespace`, treats multiple whitespaces in a row as a single separator\
+    /// Otherwise behaves like [`split`](#method.split)
     pub fn split_whitespace(self) -> Vec<Self> {
         self.split(|u| u.is_ascii_whitespace(), true)
     }
