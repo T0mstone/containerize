@@ -25,7 +25,6 @@
 
 #![warn(missing_docs)]
 use apply::*;
-use bi_result::BiResult;
 use std::iter::{once, FromIterator};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
@@ -139,10 +138,10 @@ pub fn containerize<
 >(
     iter: I,
     mut detect_delimeter: F,
-) -> BiResult<ContainerizedVec<C, Vec<I::Item>>, Vec<UnmatchedDelimeter<C>>> {
+    errs: &mut Vec<UnmatchedDelimeter<C>>,
+) -> ContainerizedVec<C, Vec<I::Item>> {
     let mut base: Vec<Containerized<C, Vec<I::Item>>> = vec![];
     let mut stack = vec![];
-    let mut unmatched = vec![];
     for (i, t) in iter.into_iter().enumerate() {
         match detect_delimeter(&t) {
             Some((s, c)) => match s {
@@ -158,7 +157,7 @@ pub fn containerize<
                     }
                     _ => {
                         // push an error and ignore it
-                        unmatched.push(UnmatchedDelimeter {
+                        errs.push(UnmatchedDelimeter {
                             side: DelimeterSide::Right,
                             source_position: i,
                             kind: c,
@@ -180,7 +179,7 @@ pub fn containerize<
         // prepend the rest
         let extra = stack.into_iter().map(|(i, c, last)| {
             // push an error and ignore the beginning delim
-            unmatched.push(UnmatchedDelimeter {
+            errs.push(UnmatchedDelimeter {
                 side: DelimeterSide::Left,
                 source_position: i,
                 kind: c,
@@ -205,19 +204,19 @@ pub fn containerize<
         }
         // base.extend(extra);
     }
-    BiResult(ContainerizedVec(base), unmatched)
+    ContainerizedVec(base)
 }
 
 /// A shortcut that automatically converts a string to chars before containerizing and converts it back to a `String` after containerizing
 pub fn containerize_chars<C: PartialEq, F: FnMut(char) -> Option<(DelimeterSide, C)>>(
     s: &str,
     mut detect_delimeter: F,
-) -> BiResult<ContainerizedVec<C, String>, Vec<UnmatchedDelimeter<C>>> {
-    containerize(s.chars(), |&c| detect_delimeter(c)).map(|v| {
-        v.into_iter()
-            .map(|c| c.map(|v| v.into_iter().collect()))
-            .collect()
-    })
+    errs: &mut Vec<UnmatchedDelimeter<C>>,
+) -> ContainerizedVec<C, String> {
+    containerize(s.chars(), |&c| detect_delimeter(c), errs)
+        .into_iter()
+        .map(|c: Containerized<C, Vec<char>>| c.map(|v| v.into_iter().collect()))
+        .collect()
 }
 
 impl<C, I: IntoIterator<Item = T>, T> Containerized<C, I> {
@@ -448,7 +447,7 @@ impl<C, T> ContainerizedVec<C, T> {
                             acc.last_mut().map(|v| v.last_mut())
                         {
                             if let Some(y) = spl.next() {
-                                // SAFETY: since the original rx can't be touched between the read and the write, this is safe
+                                // SAFETY: since the original rx isn't touched between the read and the write, this is safe
                                 unsafe {
                                     let x = std::ptr::read(rx);
                                     std::ptr::write(rx, join_adjacent(x, y))
@@ -767,15 +766,20 @@ mod tests {
     #[test]
     fn containerized() {
         let v = vec![b'(', 2, b')', 2, b')', b'(', 2];
-        let BiResult(c, e) = containerize(v, |&t| {
-            if t == b'(' {
-                Some((DelimeterSide::Left, ()))
-            } else if t == b')' {
-                Some((DelimeterSide::Right, ()))
-            } else {
-                None
-            }
-        });
+        let mut e = Vec::new();
+        let c = containerize(
+            v,
+            |&t| {
+                if t == b'(' {
+                    Some((DelimeterSide::Left, ()))
+                } else if t == b')' {
+                    Some((DelimeterSide::Right, ()))
+                } else {
+                    None
+                }
+            },
+            &mut e,
+        );
         assert_eq!(
             c.0,
             vec![

@@ -1,6 +1,6 @@
 [package]
 name = "containerize"
-version = "0.4.0"
+version = "0.5.0"
 authors = ["T0mstone <realt0mstone@gmail.com>"]
 edition = "2018"
 
@@ -8,6 +8,3 @@ edition = "2018"
 
 [dependencies]
 apply = "0.3.0"
-
-[dependencies.bi_result]
-git = "git://github.com/T0mstone/tlibs"
