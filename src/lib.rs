@@ -506,27 +506,19 @@ impl<C, I: IntoIterator> ContainerizedVec<C, I> {
             .fold(vec![ContainerizedVec(vec![])], |mut acc, c| {
                 match c {
                     Containerized::Single(v) => {
-                        let mut first = true;
                         for t in v {
                             if is_sep(&t) {
                                 if !(fuse_repeated && acc.last_mut().unwrap().is_empty()) {
-                                    acc.push(ContainerizedVec(vec![]))
+                                    acc.push(ContainerizedVec(vec![]));
                                 }
                             } else {
                                 // we preserve the boundaries between `Single` items, we only create new ones
-                                if first {
-                                    acc.last_mut().unwrap().push(Containerized::Single(vec![t]));
-                                } else {
-                                    match acc.last_mut().unwrap().last_mut() {
-                                        Some(Containerized::Single(v)) => v.push(t),
-                                        // this loop always ends with a `Single` as the last element
-                                        // and since it already ran at least once, that is now necessarily the case
-                                        _ => unreachable!(),
+                                match acc.last_mut().unwrap().last_mut() {
+                                    Some(Containerized::Single(v)) => v.push(t),
+                                    _ => {
+                                        acc.last_mut().unwrap().push(Containerized::Single(vec![t]))
                                     }
                                 }
-                            }
-                            if first {
-                                first = false;
                             }
                         }
                     }
