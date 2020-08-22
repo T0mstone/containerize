@@ -351,6 +351,26 @@ impl<C, T> Containerized<C, T> {
         Inner(f, PhantomData).f(self)
     }
 
+    /// Maps the value inside a `Single` using the given function, which returns an `Option`
+    #[inline]
+    pub fn filter_map<U>(self, f: impl FnMut(T) -> Option<U>) -> Option<Containerized<C, U>> {
+        struct Inner<T, U, F: FnMut(T) -> Option<U>>(F, PhantomData<(T, U)>);
+
+        impl<T, U, F: FnMut(T) -> Option<U>> Inner<T, U, F> {
+            pub fn f<C>(&mut self, c: Containerized<C, T>) -> Option<Containerized<C, U>> {
+                Some(match c {
+                    Containerized::Single(t) => Containerized::Single(self.0(t)?),
+                    Containerized::Contained(c, v) => Containerized::Contained(
+                        c,
+                        v.into_iter().filter_map(|x| self.f(x)).collect(),
+                    ),
+                })
+            }
+        }
+
+        Inner(f, PhantomData).f(self)
+    }
+
     /// Maps the kind, i.e. the first value inside a `Contained` using the given function
     #[inline]
     pub fn map_kind<K>(self, f: impl FnMut(C) -> K) -> Containerized<K, T> {
@@ -412,6 +432,15 @@ impl<C, T> ContainerizedVec<C, T> {
         self.0
             .into_iter()
             .flat_map(|c| c.multi_map::<I, _, Vec<_>>(&mut f))
+            .collect()
+    }
+
+    /// A wrapper for [`Containerized::filter_map`](struct.Containerized.html#method.filter_map)
+    #[inline]
+    pub fn filter_map<U, F: FnMut(T) -> Option<U>>(self, mut f: F) -> ContainerizedVec<C, U> {
+        self.0
+            .into_iter()
+            .filter_map(|c| c.filter_map(&mut f))
             .collect()
     }
 
