@@ -25,7 +25,7 @@
 
 #![warn(missing_docs)]
 use apply::*;
-use std::iter::{once, FromIterator};
+use std::iter::{once, FilterMap, FromIterator};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 
@@ -493,6 +493,40 @@ impl<C, T> ContainerizedVec<C, T> {
     }
 }
 
+fn trim_helper<
+    'a,
+    C,
+    J: IntoIterator,
+    I: Iterator<Item = Containerized<C, J>> + 'a,
+    F: FnMut(&J::Item) -> bool + 'a,
+>(
+    iter: I,
+    mut f: F,
+) -> FilterMap<I, impl FnMut(Containerized<C, J>) -> Option<Containerized<C, Vec<J::Item>>>> {
+    let mut start = true;
+    iter.filter_map(move |c| {
+        if start {
+            match c {
+                Containerized::Single(v) => {
+                    let v = v.into_iter().skip_while(&mut f).collect::<Vec<_>>();
+                    if v.is_empty() {
+                        None
+                    } else {
+                        start = false;
+                        Some(Containerized::Single(v))
+                    }
+                }
+                Containerized::Contained(..) => {
+                    start = false;
+                    Some(c.map(|i| i.into_iter().collect()))
+                }
+            }
+        } else {
+            Some(c.map(|i| i.into_iter().collect()))
+        }
+    })
+}
+
 impl<C, I: IntoIterator> ContainerizedVec<C, I> {
     /// Split the top-most layer (contents of `Contained` are left untouched) according to `is_sep`,
     /// which determines, whether an item is a separator
@@ -535,72 +569,19 @@ impl<C, I: IntoIterator> ContainerizedVec<C, I> {
     /// stops at the first item where `f` returns `false` (or at the first `Contained`)
     pub fn trim_start_matches<F: FnMut(&I::Item) -> bool>(
         self,
-        mut f: F,
+        f: F,
     ) -> ContainerizedVec<C, Vec<I::Item>> {
-        let mut start = true;
-        self.0
-            .into_iter()
-            .filter_map(|c| {
-                if start {
-                    match c {
-                        Containerized::Single(v) => {
-                            let v = v.into_iter().skip_while(&mut f).collect::<Vec<_>>();
-                            if v.is_empty() {
-                                None
-                            } else {
-                                start = false;
-                                Some(Containerized::Single(v))
-                            }
-                        }
-                        Containerized::Contained(..) => {
-                            start = false;
-                            Some(c.map(|i| i.into_iter().collect()))
-                        }
-                    }
-                } else {
-                    Some(c.map(|i| i.into_iter().collect()))
-                }
-            })
-            .collect()
+        trim_helper(self.0.into_iter(), f).collect()
     }
 
     /// Removes all items for which `f` returns `true` from the end (contents of `Contained` are left untouched);
     /// stops at the first (from the end) item where `f` returns `false` (or at the first `Contained`)
     pub fn trim_end_matches<F: FnMut(&I::Item) -> bool>(
         self,
-        mut f: F,
+        f: F,
     ) -> ContainerizedVec<C, Vec<I::Item>> {
-        let mut start = true;
-        self.0
-            .into_iter()
-            .filter_map(|c| {
-                if start {
-                    match c {
-                        Containerized::Single(v) => {
-                            let v = v
-                                .into_iter()
-                                .collect::<Vec<_>>()
-                                .into_iter()
-                                .rev()
-                                .skip_while(&mut f)
-                                .collect::<Vec<_>>()
-                                .also(|v| v.reverse());
-                            if v.is_empty() {
-                                None
-                            } else {
-                                start = false;
-                                Some(Containerized::Single(v))
-                            }
-                        }
-                        Containerized::Contained(..) => {
-                            start = false;
-                            Some(c.map(|i| i.into_iter().collect()))
-                        }
-                    }
-                } else {
-                    Some(c.map(|i| i.into_iter().collect()))
-                }
-            })
+        trim_helper(Vec::from_iter(self.0).into_iter().rev(), f)
+            .rev()
             .collect()
     }
 
@@ -609,39 +590,8 @@ impl<C, I: IntoIterator> ContainerizedVec<C, I> {
         self,
         mut f: F,
     ) -> ContainerizedVec<C, Vec<I::Item>> {
-        let mut start = true;
-        self.0
-            .into_iter()
-            .filter_map(|c| {
-                if start {
-                    match c {
-                        Containerized::Single(v) => {
-                            let v = v
-                                .into_iter()
-                                .skip_while(&mut f)
-                                .collect::<Vec<_>>()
-                                .into_iter()
-                                .rev()
-                                .skip_while(&mut f)
-                                .collect::<Vec<_>>()
-                                .also(|v| v.reverse());
-                            if v.is_empty() {
-                                None
-                            } else {
-                                start = false;
-                                Some(Containerized::Single(v))
-                            }
-                        }
-                        Containerized::Contained(..) => {
-                            start = false;
-                            Some(c.map(|i| i.into_iter().collect()))
-                        }
-                    }
-                } else {
-                    Some(c.map(|i| i.into_iter().collect()))
-                }
-            })
-            .collect()
+        // getting rid of one of the `collect`s here is impossible since that would double-mut-borrow `f`
+        self.trim_start_matches(&mut f).trim_end_matches(f)
     }
 }
 
@@ -756,160 +706,4 @@ macro_rules! containerized_vec {
 }
 
 #[cfg(test)]
-mod tests {
-    use crate::visit::*;
-    use crate::*;
-
-    #[test]
-    fn r#macro() {
-        let v = containerized_vec![() => [1u8, 2, 3], 4, () => [() => [() => [5]]]];
-        let ctrl = vec![
-            Containerized::contained(
-                (),
-                vec![
-                    Containerized::Single(1u8),
-                    Containerized::Single(2),
-                    Containerized::Single(3),
-                ],
-            ),
-            Containerized::Single(4),
-            Containerized::contained(
-                (),
-                vec![Containerized::contained(
-                    (),
-                    vec![Containerized::contained((), vec![Containerized::Single(5)])],
-                )],
-            ),
-        ];
-        assert_eq!(v.0, ctrl);
-    }
-
-    #[test]
-    fn containerized() {
-        let v = vec![b'(', 2, b')', 2, b')', b'(', 2];
-        let mut e = Vec::new();
-        let c = containerize(
-            v,
-            |&t| {
-                if t == b'(' {
-                    Some((DelimeterSide::Left, ()))
-                } else if t == b')' {
-                    Some((DelimeterSide::Right, ()))
-                } else {
-                    None
-                }
-            },
-            &mut e,
-        );
-        assert_eq!(
-            c.0,
-            vec![
-                Containerized::contained((), vec![Containerized::Single(vec![2])]),
-                Containerized::Single(vec![2, 2])
-            ]
-        );
-        assert_eq!(
-            e,
-            vec![
-                UnmatchedDelimeter {
-                    side: DelimeterSide::Right,
-                    source_position: 4,
-                    kind: ()
-                },
-                UnmatchedDelimeter {
-                    side: DelimeterSide::Left,
-                    source_position: 5,
-                    kind: ()
-                }
-            ]
-        );
-    }
-
-    #[test]
-    fn spread_collect() {
-        let c = Containerized::<(), Vec<u8>>::Single(vec![2, 3, 4]);
-        let cs = c.clone().spread_single::<ContainerizedVec<(), u8>>();
-        assert_eq!(
-            cs.0,
-            vec![
-                Containerized::Single(2),
-                Containerized::Single(3),
-                Containerized::Single(4)
-            ]
-        );
-        assert_eq!(cs.collapse_single().0, vec![c]);
-    }
-
-    #[test]
-    fn visit() {
-        let mut c = containerized![() => [3, () => [4, 5], 6]];
-        let mut sum = 0;
-        c.visit(|x| {
-            if let Containerized::Single(n) = *x {
-                sum += n
-            }
-        });
-        assert_eq!(sum, 3 + 4 + 5 + 6);
-        let mut c2 = c.clone();
-        c.visit(|x| match x {
-            Containerized::Single(n) => {
-                *n += 1;
-            }
-            Containerized::Contained(_, v) => {
-                v.push(Containerized::Single(1));
-            }
-        });
-        let ctrl = containerized!(() => [4, () => [5, 6, 2], 7, 2]);
-        assert_eq!(c, ctrl);
-        c2.visit_with_config(
-            |x| match x {
-                Containerized::Single(n) => {
-                    *n += 1;
-                }
-                Containerized::Contained(_, v) => {
-                    v.push(Containerized::Single(1));
-                }
-            },
-            VisitConfig {
-                order: TraversalOrder::ParentLast,
-                ..Default::default()
-            },
-        );
-        let ctrl = containerized!(() => [4, () => [5, 6, 1], 7, 1]);
-        assert_eq!(c2, ctrl);
-    }
-
-    #[test]
-    fn map() {
-        let c = Containerized::<(), u8>::Single(3);
-        assert_eq!(c.map(|x| x + 1), Containerized::Single(4));
-        let c = Containerized::<(), u8>::contained(
-            (),
-            vec![Containerized::Single(2), Containerized::Single(3)],
-        );
-        let ctrl = Containerized::<(), u8>::contained(
-            (),
-            vec![Containerized::Single(3), Containerized::Single(4)],
-        );
-        assert_eq!(c.map(|x| x + 1), ctrl);
-        let c = Containerized::<u8, u8>::contained(
-            1,
-            vec![Containerized::Single(2), Containerized::Single(3)],
-        );
-        let ctrl = Containerized::<u8, u8>::contained(
-            2,
-            vec![Containerized::Single(2), Containerized::Single(3)],
-        );
-        assert_eq!(c.map_kind(|x| x + 1), ctrl);
-    }
-
-    #[test]
-    fn join() {
-        let c = containerized!(() => [() => [() => [], () => [b'3']], b'3', b'4']);
-        assert_eq!(
-            c.uncontainerize(|_| (b'(', b')')),
-            b"((()(3))34)".to_vec(),
-            // vec![b'(', b'(', b'(', b')', b'(', 3, b')', b')', 3, 4, b')']
-        );
-    }
-}
+mod tests;
