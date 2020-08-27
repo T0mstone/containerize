@@ -135,17 +135,21 @@ pub fn containerize<
     C: PartialEq,
     I: IntoIterator,
     F: FnMut(&I::Item) -> Option<(DelimeterSide, C)>,
+    G: FnMut(&I::Item) -> usize,
 >(
     iter: I,
     mut detect_delimeter: F,
+    mut get_len: G,
     errs: &mut Vec<UnmatchedDelimeter<C>>,
 ) -> ContainerizedVec<C, Vec<I::Item>> {
     let mut base: Vec<Containerized<C, Vec<I::Item>>> = vec![];
     let mut stack = vec![];
-    for (i, t) in iter.into_iter().enumerate() {
+    let mut source_position = 0;
+    for t in iter {
+        let delta = get_len(&t);
         match detect_delimeter(&t) {
             Some((s, c)) => match s {
-                DelimeterSide::Left => stack.push((i, c, vec![])),
+                DelimeterSide::Left => stack.push((source_position, c, vec![])),
                 DelimeterSide::Right => match stack.last() {
                     Some((_, cl, _)) if *cl == c => {
                         let (_, c, last) = stack.pop().unwrap();
@@ -159,7 +163,7 @@ pub fn containerize<
                         // push an error and ignore it
                         errs.push(UnmatchedDelimeter {
                             side: DelimeterSide::Right,
-                            source_position: i,
+                            source_position,
                             kind: c,
                         });
                     }
@@ -174,14 +178,15 @@ pub fn containerize<
                 }
             }
         }
+        source_position += delta;
     }
     if !stack.is_empty() {
         // prepend the rest
-        let extra = stack.into_iter().map(|(i, c, last)| {
+        let extra = stack.into_iter().map(|(source_position, c, last)| {
             // push an error and ignore the beginning delim
             errs.push(UnmatchedDelimeter {
                 side: DelimeterSide::Left,
-                source_position: i,
+                source_position,
                 kind: c,
             });
             // ignoring means flattening the structure
@@ -213,7 +218,7 @@ pub fn containerize_chars<C: PartialEq, F: FnMut(char) -> Option<(DelimeterSide,
     mut detect_delimeter: F,
     errs: &mut Vec<UnmatchedDelimeter<C>>,
 ) -> ContainerizedVec<C, String> {
-    containerize(s.chars(), |&c| detect_delimeter(c), errs)
+    containerize(s.chars(), |&c| detect_delimeter(c), |c| c.len_utf8(), errs)
         .into_iter()
         .map(|c: Containerized<C, Vec<char>>| c.map(|v| v.into_iter().collect()))
         .collect()
